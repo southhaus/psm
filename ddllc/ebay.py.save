@@ -1,0 +1,185 @@
+import requests
+import re
+from bs4 import BeautifulSoup
+import lxml
+from datetime import datetime, UTC
+from shelved_cache import PersistentCache
+from cachetools import LRUCache
+
+# "api_key": "3567bd18bebaa74f57a0387ed93b8980",
+SHOPPING_URL = (
+    "https://open.api.ebay.com/shopping?callname=GetSingleItem"
+    + "&responseencoding=JSON&siteid=0&version=967"
+    + "&IncludeSelector=Details&ItemID="
+)
+AMAZON_URL = "https://api.scraperapi.com/structured/amazon/product"
+WALMART_URL = "https://api.scraperapi.com/structured/walmart/product"
+CACHE = PersistentCache(LRUCache, filename="token.cache", maxsize=1)
+
+
+def ebay_access_token() -> str:
+    params = {
+        "grant_type": "client_credentials",
+        "scope": "https://api.ebay.com/oauth/api_scope",
+    }
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": (
+            "Basic RnJvQ293LURpbGxzRGVhLVBSRC03ZTU3MzEyNmMtODc0Y"
+            + "mQwOGU6UFJELWU1NzMxMjZjNGIzMC0zMDliLTRmNmUtOT"
+            + "c4ZC1mZGM1"
+        ),
+    }
+    resp = requests.post(
+        "https://api.ebay.com/identity/v1/oauth2/token",
+        headers=headers,
+        params=params,
+    )
+    return resp.json().get("access_token")
+
+
+def ebay_get_single_item(p):
+
+    with requests.Session() as Session:
+        Session.headers = {"X-EBAY-API-IAF-TOKEN": ebay_access_token()}
+        resp = Session.get(SHOPPING_URL + str(p.productid)).json()
+
+        if resp["Ack"] == "Failure":
+            p.last_sync_status = 0
+            p.sync = False
+
+        if resp["Ack"] == "Success":
+            item = resp["Item"]
+            p.sku = item.get("SKU")
+            p.stock = item["Quantity"] - item["QuantitySold"]
+            p.instock = p.stock > 0
+            p.name = item["Title"]
+            p.url = item["ViewItemURLForNaturalSearch"]
+            p.updated_at = datetime.now(UTC)
+            p.last_sync_status = 1
+            p.sync = True
+
+    p.last_sync_at = datetime.now(UTC)
+    p.updated_at = p.last_sync_at
+    return p.save()
+
+
+def amazon_get_single_item(p):
+    with requests.Session() as Session:
+        Session.params = {
+            "api_key": "727a30efe6fd82629bd475e961ac5f6c",
+            "asin": str(p.productid),
+            "country_code": "us",
+            "tld": "com",
+        }
+        resp = Session.get(AMAZON_URL)
+        item = resp.json()
+
+        if resp.status_code != 200:
+            p.last_sync_status = 0
+            p.sync = False
+
+        if resp.status_code == 200:
+            p.sku = item.get("SKU")
+            p.stock = item.get("availability_quantity")
+            p.instock = "in stock" in item["availability_status"].lower()
+            p.name = item["name"]
+            p.url = "https://www.amazon.com/dp/" + p.productid
+            p.updated_at = datetime.now(UTC)
+            p.last_sync_status = 1
+            p.sync = True
+
+        p.last_sync_at = datetime.now(UTC)
+        p.updated_at = p.last_sync_at
+        return p.save()
+
+
+def amazon_get_item(p):
+    with requests.Session() as Session:
+        Session.params = {
+            "x-api-key": "25c706b913eb4823a04c05a9b5c7395f",
+            "browser": "true",
+            "proxy_type": "residential",
+            "url": "https://www.amazon.com/dp/" + p.productid,
+        }
+        resp = Session.get("https://api.scrapingant.com/v2/general", stream=True)
+        content = resp.raw.read(decode_content=True)
+        html = BeautifulSoup(content, "lxml")
+
+        if resp.headers["ant-page-status-code"] != '200':
+            p.last_sync_status = 0
+            p.sync = False
+
+        if resp.headers["ant-page-status-code"] == '200':
+            s = html.find(id="availability").span.text
+            p.stock = re.search("[0-9]+", s).group()
+            p.instock = re.search("in stock", s, re.IGNORECASE).group() != None
+            p.name = html.find(id="productTitle").text
+            p.url = "https://www.amazon.com/dp/" + p.productid
+            p.updated_at = datetime.now(UTC)
+            p.last_sync_status = 1
+            p.sync = True
+
+        p.last_sync_at = datetime.now(UTC)
+        p.updated_at = p.last_sync_at
+        return p
+
+
+def walmart_get_single_item(p):
+    with requests.Session() as Session:
+        Session.params = {
+            "api_key": "727a30efe6fd82629bd475e961ac5f6c",
+            "product_id": str(p.productid),
+        }
+
+        count = 2
+        while count > 0:
+            # alternative solutions: request retries using urllib, huey task
+            # retries, tenacity library. The first step however, is to revert
+            # to walmart developer api.
+            resp = Session.get(WALMART_URL)
+            if resp.status_code == 200:
+                item = resp.json()
+                break
+
+        if resp.status_code != 200:
+            p.last_sync_status = 0
+            p.sync = False
+
+        if resp.status_code == 200:
+            p.sku = item["sku"]
+            p.name = item["product_name"]
+            p.url = item["product_url"]
+            p.updated_at = datetime.now(UTC)
+            p.last_sync_status = 1
+            p.sync = True
+
+            for variant in item["variants"]:
+                if variant["availability_status"] == "IN_STOCK":
+                    p.instock = True
+                    break
+
+def walmart_get_item(p):
+    with requests.Session() as Session:
+        Session.params = {
+            "x-api-key": "25c706b913eb4823a04c05a9b5c7395f",
+            "browser": "true",
+            "proxy_type": "residential",
+            "url": "https://www.walmart.com/ip/" + p.productid,
+        }
+        resp = Session.get("https://api.scrapingant.com/v2/general", stream=True)
+        content = resp.raw.read(decode_content=True)
+        html = BeautifulSoup(content, "lxml")
+        return html
+
+        if resp.headers["ant-page-status-code"] != '200':
+            p.last_sync_status = 0
+            p.sync = False
+
+        if resp.headers["ant-page-status-code"] == '200':
+            p.last_sync_status = 1
+            p.sync = True
+
+        p.last_sync_at = datetime.now(UTC)
+        p.updated_at = p.last_sync_at
+        return p
