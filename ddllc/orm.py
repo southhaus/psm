@@ -55,7 +55,10 @@ class Product(BaseModel):
     @staticmethod
     @database.atomic()
     def add_product(data: dict):
-        p, state = Product.get_or_create(**data)
+        try:
+            p = Product.get(Product.productid==data["productid"])
+        except:
+            p = Product.create(**data)
         return p
 
     def add_csv(data: dict):
