@@ -77,10 +77,10 @@ def amazon_get_single_item(p):
 
         if resp.status_code == 200:
             item = resp.json()
-            instock = item["body"]["inStock"]
             stockdetail = re.search("[0-9]+", item["body"]["stockDetail"]) != None
 
-            p.instock = instock or stockdetail
+            p.stock = item["body"]["maximumQuantity"]
+            p.instock = stockdetail > 0
             p.name = item["body"]["name"]
             p.url = item["body"]["canonicalUrl"]
             p.updated_at = datetime.now(UTC)
