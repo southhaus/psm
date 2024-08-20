@@ -10,6 +10,7 @@ base = Bottle()
 @base.route("/products", method="POST")
 def products():
     data = request.json
+    logger.info(data)
     source = data["source"]
     products = []
 
