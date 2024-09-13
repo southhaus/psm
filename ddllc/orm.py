@@ -1,5 +1,5 @@
 import time
-import yaml
+import re
 from peewee import (
     CharField,
     BooleanField,
@@ -13,13 +13,16 @@ from peewee import (
 )
 from datetime import datetime
 import pandas
-from loguru import logger
 
+merchants = {
+    "amazon": re.compile("[A-Z0-9]{10}"),
+    "ebay": re.compile("[0-9]{12}"),
+    "alibaba": re.compile("[0-9]{16}"),
+    "walmart": re.compile("[0-9]{10}")
+}
 
 database = PostgresqlDatabase(
     "postgresql://app:1S6ON66SdB6G3R905mTkc2zg@morally-sensible-turkey-iad.a1.pgedge.io/psm_db?sslmode=require"
-    # "postgresql://postgres:mP30a6sCrS9ImfQUoD0lvw@psm-db.cvq6k8qeqb0u.us-east-2.rds.amazonaws.com/psm-db?sslmode=require"
-    # "postgresql://psm-user:DMwj0Kvzmmf-VZzy8gX8rw@psm-db-14641.5xj.gcp-us-central1.cockroachlabs.cloud:26257/psmdb?sslmode=verify-full"
 )
 
 
@@ -55,9 +58,18 @@ class Product(BaseModel):
     @staticmethod
     @database.atomic()
     def add_product(data: dict):
+        """
+        productid may be located in url field or productid field.
+        parse the url field for the productid if the productid field
+        is null
+        """
+        merchant = merchants[data["source"]]
+        if (productid := merchant.search(data["url"]).group(0)):
+            data["productid"] = productid
+
         try:
-            p = Product.get(Product.productid==data["productid"])
-        except:
+            p = Product.get(Product.productid == data["productid"])
+        except BaseException:
             p = Product.create(**data)
         return p
 

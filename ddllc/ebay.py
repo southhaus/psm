@@ -92,7 +92,11 @@ def amazon_get_single_item(p):
         return p.save()
 
 
-def walmart_get_single_item(p):
+def walmart_get_single_item():
+    pass
+
+
+def walmart_get_single_item_deprecated(p):
     with requests.Session() as Session:
         Session.params = {
             "token": "2rxmfocpUgZjW_DaRnxB4w",
